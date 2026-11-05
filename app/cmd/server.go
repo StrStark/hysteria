@@ -47,6 +47,7 @@ import (
 	"github.com/apernet/hysteria/extras/v2/correctnet"
 	"github.com/apernet/hysteria/extras/v2/masq"
 	"github.com/apernet/hysteria/extras/v2/obfs"
+	"github.com/apernet/hysteria/extras/v2/spoofpc"
 	"github.com/apernet/hysteria/extras/v2/outbounds"
 	"github.com/apernet/hysteria/extras/v2/realm"
 	"github.com/apernet/hysteria/extras/v2/sniff"
@@ -93,6 +94,17 @@ type serverConfig struct {
 	Outbounds             []serverConfigOutboundEntry `mapstructure:"outbounds"`
 	TrafficStats          serverConfigTrafficStats    `mapstructure:"trafficStats"`
 	Masquerade            serverConfigMasquerade      `mapstructure:"masquerade"`
+	Spoof                 *serverConfigSpoof          `mapstructure:"spoof"`
+}
+
+// serverConfigSpoof makes the server speak QUIC over forged-source ICMP to
+// the Iran server's real address. Src is this server's white IP, Peer the
+// Iran real address, Accept the Iran server's forged source.
+type serverConfigSpoof struct {
+	Src    string `mapstructure:"src"`
+	Peer   string `mapstructure:"peer"`
+	Accept string `mapstructure:"accept"`
+	ID     uint16 `mapstructure:"id"`
 }
 
 type serverConfigRealm struct {
@@ -355,7 +367,14 @@ func (c *serverConfig) fillConn(hyConfig *server.Config) error {
 	}
 	var packetConn net.PacketConn = conn
 	var cleanup io.Closer
-	if len(portUnion) > 0 {
+	if c.Spoof != nil && c.Spoof.Src != "" {
+		_ = conn.Close()
+		sp, serr := spoofpc.New(spoofpc.Config{Src: c.Spoof.Src, PeerReal: c.Spoof.Peer, Accept: c.Spoof.Accept, PeerPort: uAddr.Port, ID: c.Spoof.ID})
+		if serr != nil {
+			return configError{Field: "spoof", Err: serr}
+		}
+		packetConn = sp
+	} else if len(portUnion) > 0 {
 		cleanup, err = firewall.SetupUDPPortRedirect(uAddr, portUnion)
 		if err != nil {
 			_ = conn.Close()

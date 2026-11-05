@@ -40,6 +40,7 @@ import (
 	"github.com/apernet/hysteria/core/v2/client"
 	"github.com/apernet/hysteria/extras/v2/correctnet"
 	"github.com/apernet/hysteria/extras/v2/obfs"
+	"github.com/apernet/hysteria/extras/v2/spoofpc"
 	"github.com/apernet/hysteria/extras/v2/realm"
 	"github.com/apernet/hysteria/extras/v2/transport/udphop"
 )
@@ -92,6 +93,17 @@ type clientConfig struct {
 	UDPTProxy     *udpTProxyConfig       `mapstructure:"udpTProxy"`
 	TCPRedirect   *tcpRedirectConfig     `mapstructure:"tcpRedirect"`
 	TUN           *tunConfig             `mapstructure:"tun"`
+	Spoof         *clientConfigSpoof     `mapstructure:"spoof"`
+}
+
+// clientConfigSpoof carries QUIC inside forged-source ICMP to the server's
+// real address. Src is a white IP; Peer defaults to the resolved server IP;
+// Accept is the server's own forged source.
+type clientConfigSpoof struct {
+	Src    string `mapstructure:"src"`
+	Peer   string `mapstructure:"peer"`
+	Accept string `mapstructure:"accept"`
+	ID     uint16 `mapstructure:"id"`
 }
 
 type mimicConfig struct {
@@ -294,6 +306,22 @@ func (c *clientConfig) fillConnFactory(hyConfig *client.Config) error {
 		}
 	default:
 		return configError{Field: "transport.type", Err: errors.New("unsupported transport type")}
+	}
+	if c.Spoof != nil && c.Spoof.Src != "" {
+		peer := c.Spoof.Peer
+		port := 443
+		if ua, ok := hyConfig.ServerAddr.(*net.UDPAddr); ok {
+			if peer == "" {
+				peer = ua.IP.String()
+			}
+			if ua.Port != 0 {
+				port = ua.Port
+			}
+		}
+		sp := c.Spoof
+		openInner = func() (net.PacketConn, error) {
+			return spoofpc.New(spoofpc.Config{Src: sp.Src, PeerReal: peer, Accept: sp.Accept, PeerPort: port, ID: sp.ID})
+		}
 	}
 	hyConfig.ConnFactory = &singleUseConnFactory{
 		Open: func() (net.PacketConn, error) {
